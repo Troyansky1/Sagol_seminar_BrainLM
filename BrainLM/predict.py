@@ -99,9 +99,9 @@ example1 = test_ds[0]
 print(np.array(example1["Voxelwise_RobustScaler_Normalized_Recording"]).shape)
 
 
-coords_ds_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/BrainLM/toolkit/atlases/A424_Coordinates.dat"
+coords_ds_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrinLM/BrainLM/toolkit/atlases/A424_Coordinates.dat"
 if '.dat' in str(coords_ds_path):
-    coords_ds = pd.read_csv('/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/BrainLM/toolkit/atlases/A424_Coordinates.dat',delimiter='\t', names=['idx', 'X', 'Y', 'Z'])
+    coords_ds = pd.read_csv('/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrinLM/BrainLM/toolkit/atlases/A424_Coordinates.dat',delimiter='\t', names=['idx', 'X', 'Y', 'Z'])
     coords_ds = Dataset.from_pandas(coords_ds)
 else:
     coords_ds = load_from_disk(coords_ds_path)
