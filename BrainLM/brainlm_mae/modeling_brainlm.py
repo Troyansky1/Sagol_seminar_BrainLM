@@ -618,12 +618,6 @@ class BrainLMForPretraining(ViTMAEForPreTraining):
         ids_restore = outputs.ids_restore
         mask = outputs.mask
 
-        print("ids_restore:", ids_restore)
-        print("mask shape:", mask.shape)
-        torch.set_printoptions(threshold=torch.inf)
-        print("mask:", mask)
-        torch.set_printoptions(profile="default")
-        
         decoder_outputs = self.decoder(latent, xyz_vectors, ids_restore)
         logits = (
             decoder_outputs.logits
