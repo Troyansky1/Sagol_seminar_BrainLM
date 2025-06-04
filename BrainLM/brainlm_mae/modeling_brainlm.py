@@ -618,6 +618,12 @@ class BrainLMForPretraining(ViTMAEForPreTraining):
         ids_restore = outputs.ids_restore
         mask = outputs.mask
 
+        print("ids_restore:", ids_restore)
+        print("mask shape:", mask.shape)
+        torch.set_printoptions(threshold=torch.inf)
+        print("mask:", mask)
+        torch.set_printoptions(profile="default")
+        
         decoder_outputs = self.decoder(latent, xyz_vectors, ids_restore)
         logits = (
             decoder_outputs.logits
@@ -626,6 +632,7 @@ class BrainLMForPretraining(ViTMAEForPreTraining):
         # batch_size, num_voxels, num_tokens, patch_size = logits.shape
         input_signal_vectors_reshaped = torch.reshape(signal_vectors, logits.shape)
         mask = mask.reshape(logits.shape[:-1])
+
         loss = self.forward_loss(input_signal_vectors_reshaped, logits, mask)
 
         if loss.item() > 5.:
