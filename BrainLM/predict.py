@@ -121,14 +121,13 @@ print("gt:", gt.shape)
 # ---- Plot ----
 os.makedirs("plots", exist_ok=True)
 
-plt.figure()
-plt.plot(gt[0, :], label="Ground Truth")
-plt.plot(logits[0, :], label="Prediction")
-plt.legend()
-plt.savefig("plots/plot_voxel_0.png")
+def plot_parcel(num_parcel):
+    plt.figure()
+    plt.plot(gt[num_parcel, :], label="Ground Truth")
+    plt.plot(logits[num_parcel, :], label="Prediction")
+    plt.legend()
+    plt.savefig(f"plots/plot_voxel_{num_parcel}.png")
 
-plt.figure()
-plt.plot(gt[200, :], label="Ground Truth")
-plt.plot(logits[200, :], label="Prediction")
-plt.legend()
-plt.savefig("plots/plot_voxel_200.png")
+for i in range(1, 10):
+    plot_parcel(i)
+
