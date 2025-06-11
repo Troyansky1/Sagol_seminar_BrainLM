@@ -51,7 +51,8 @@ def preprocess_images(examples):
         signal_vector = torch.tensor(signal_vector, dtype=torch.float32)
 
         # Select a random time window
-        start_idx = randint(0, signal_vector.shape[0] - moving_window_len)
+        # start_idx = randint(0, signal_vector.shape[0] - moving_window_len)
+        start_idx = 0
         end_idx = start_idx + moving_window_len
 
         window = signal_vector[start_idx:end_idx, :]  # shape: [moving_window_len, V]
@@ -87,7 +88,7 @@ def preprocess_images(examples):
 example = test_ds[0]
 example[recording_col_name] = [example[recording_col_name]]  # wrap list
 inputs = preprocess_images(example)
-
+print("inputs shape", inputs["signal_vectors"].shape)
 labels = torch.zeros(len(inputs["xyz_vectors"]), dtype=torch.float32)
 
 # These inputs will go to model.forward(), names must match
@@ -108,26 +109,128 @@ with torch.no_grad():
     )
 
 # ---- Results ----
-logits_tensor = output["logits"][0]  # get the actual tensor
-logits = logits_tensor[0, :, :, 0].cpu().numpy()  # now this will work
+logits_tensor = output["logits"][0]  # [1, 424, 3, 40]
+# Concatenate the 3 tokens per voxel
+logits_reshaped = logits_tensor[0].reshape(424, -1)  # [424, 120]
 
+# Get full mask pattern for all tokens
+mask_full = output["mask"][0].reshape(424, 3)  # [424 voxels, 3 tokens each]
 
+# Find voxels with exactly 1 masked token
+num_masked_per_voxel = torch.sum(mask_full, dim=1)  # Count masked tokens per voxel
+single_masked_voxels = torch.where(num_masked_per_voxel == 1)[0]
 #logits = output["logits"][0, :, :, 0].cpu().numpy()  # shape: [voxels, tokens]
 gt = inputs["signal_vectors"][0, :, :].cpu().numpy()
-
-print("logits:", logits.shape)
-print("gt:", gt.shape)
 
 # ---- Plot ----
 os.makedirs("plots", exist_ok=True)
 
-def plot_parcel(num_parcel):
-    plt.figure()
-    plt.plot(gt[num_parcel, :], label="Ground Truth")
-    plt.plot(logits[num_parcel, :], label="Prediction")
+def plot_single_masked_voxel(voxel_idx, gt, predicted_logits, mask_pattern):
+    plt.figure(figsize=(15, 8))
+    
+    # Plot ground truth
+    plt.plot(gt[voxel_idx, :], 'b-', linewidth=3, label="Ground Truth", alpha=0.8)
+    
+    # Plot prediction
+    plt.plot(predicted_logits[voxel_idx, :], 'r--', linewidth=2, label="Prediction")
+    
+    # Highlight which 40-timepoint segment was masked
+    masked_token_idx = torch.where(mask_pattern == 1)[0][0].item()  # Find which token was masked
+    start_t = masked_token_idx * 40
+    end_t = (masked_token_idx + 1) * 40
+    
+    plt.axvspan(start_t, end_t, alpha=0.3, color='red', 
+               label=f'Masked Segment ({start_t}-{end_t})')
+    
+    # Add vertical lines to show token boundaries
+    for i in range(1, 3):
+        plt.axvline(x=i*40, color='gray', linestyle=':', alpha=0.5)
+    
+    plt.title(f'Voxel {voxel_idx} - Single Masked Token (Token {masked_token_idx})')
+    plt.xlabel('Timepoint')
+    plt.ylabel('Brain Activity')
     plt.legend()
-    plt.savefig(f"plots/plot_voxel_{num_parcel}.png")
+    plt.grid(True, alpha=0.3)
+        # Add text annotations for token regions
+    plt.text(20, plt.ylim()[1]*0.9, 'Token 0\n(0-39)', ha='center', va='top', 
+             bbox=dict(boxstyle="round,pad=0.3", facecolor='lightgreen' if masked_token_idx != 0 else 'lightcoral'))
+    plt.text(60, plt.ylim()[1]*0.9, 'Token 1\n(40-79)', ha='center', va='top',
+             bbox=dict(boxstyle="round,pad=0.3", facecolor='lightgreen' if masked_token_idx != 1 else 'lightcoral'))
+    plt.text(100, plt.ylim()[1]*0.9, 'Token 2\n(80-119)', ha='center', va='top',
+             bbox=dict(boxstyle="round,pad=0.3", facecolor='lightgreen' if masked_token_idx != 2 else 'lightcoral'))
+    
+    plt.savefig(f"plots/single_masked_voxel_{voxel_idx}_token_{masked_token_idx}.png", dpi=150, bbox_inches='tight')
+    plt.close()
 
-for i in range(1, 10):
-    plot_parcel(i)
 
+# Apply linear correction to match input statistics
+def correct_predictions(pred, target_mean, target_std, pred_mean, pred_std):
+    # Standardize predictions, then rescale to target distribution
+    pred_standardized = (pred - pred_mean) / pred_std
+    pred_corrected = pred_standardized * target_std + target_mean
+    return pred_corrected
+
+# Get statistics
+input_mean = inputs['signal_vectors'].mean().item()
+input_std = inputs['signal_vectors'].std().item()
+output_mean = logits_reshaped.mean().item()
+output_std = logits_reshaped.std().item()
+
+# Apply correction
+logits_corrected = correct_predictions(
+    logits_reshaped.cpu().numpy(), 
+    input_mean, input_std, 
+    output_mean, output_std
+)
+
+print("=== AFTER CORRECTION ===")
+print(f"Corrected mean: {logits_corrected.mean():.3f}")
+print(f"Corrected std: {logits_corrected.std():.3f}")
+print(f"Corrected min: {logits_corrected.min():.3f}")
+print(f"Corrected max: {logits_corrected.max():.3f}")
+
+# Test on unmasked voxel
+no_masked_voxels = torch.where(num_masked_per_voxel == 0)[0]
+if len(no_masked_voxels) > 0:
+    test_voxel = no_masked_voxels[0].item()
+    gt_signal = gt[test_voxel, :]
+    pred_signal = logits_reshaped.cpu().numpy()[test_voxel, :]
+
+test_voxel = no_masked_voxels[0].item()
+gt_signal = gt[test_voxel, :]
+pred_corrected_signal = logits_corrected[test_voxel, :]
+
+mse = np.mean((gt_signal - pred_signal) ** 2)
+mse_corrected = np.mean((gt_signal - pred_corrected_signal) ** 2)
+print(f"MSE after correction: {mse_corrected:.6f} (was {mse:.6f})")
+
+# Plot with corrected predictions
+def plot_corrected_voxel(voxel_idx, gt, predicted_logits, mask_pattern):
+    plt.figure(figsize=(15, 8))
+    
+    plt.plot(gt[voxel_idx, :], 'b-', linewidth=3, label="Ground Truth", alpha=0.8)
+    plt.plot(predicted_logits[voxel_idx, :], 'r--', linewidth=2, label="Corrected Prediction")
+    
+    masked_token_idx = torch.where(mask_pattern == 1)[0][0].item()
+    start_t = masked_token_idx * 40
+    end_t = (masked_token_idx + 1) * 40
+    
+    plt.axvspan(start_t, end_t, alpha=0.3, color='red', 
+               label=f'Masked Segment ({start_t}-{end_t})')
+    
+    for i in range(1, 3):
+        plt.axvline(x=i*40, color='gray', linestyle=':', alpha=0.5)
+    
+    plt.title(f'Voxel {voxel_idx} - Corrected Prediction (Token {masked_token_idx})')
+    plt.xlabel('Timepoint')
+    plt.ylabel('Brain Activity')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(f"plots/corrected_voxel_{voxel_idx}_token_{masked_token_idx}.png", dpi=150, bbox_inches='tight')
+    plt.close()
+
+# Plot one corrected example
+if len(single_masked_voxels) > 0:
+    voxel_idx = single_masked_voxels[0].item()
+    mask_pattern = mask_full[voxel_idx]
+    plot_corrected_voxel(voxel_idx, gt, logits_corrected, mask_pattern)
