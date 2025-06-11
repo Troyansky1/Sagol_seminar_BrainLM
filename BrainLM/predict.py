@@ -24,6 +24,218 @@ model = BrainLMForPretraining.from_pretrained(checkpoint_path)
 model.eval()
 print("Loaded model")
 
+"""
+Simple test to verify ids_restore logic works correctly with synthetic data.
+Add this to your train.py right after model creation, before any training.
+"""
+
+def test_ids_restore_logic():
+    """
+    Test the ids_restore mechanism with simple synthetic data.
+    This mimics what happens in BrainLMEmbeddings.random_masking()
+    """
+    print("=" * 50)
+    print("TESTING IDS_RESTORE LOGIC WITH SYNTHETIC DATA")
+    print("=" * 50)
+    
+    # Create simple synthetic data
+    batch_size = 2
+    seq_length = 10  # Small sequence for easy visualization
+    hidden_dim = 4
+    mask_ratio = 0.4  # Mask 40%
+    
+    device = next(model.parameters()).device
+    
+    # Create test sequence where each position has its index as value
+    # This makes it easy to see if restoration works
+    test_sequence = torch.zeros(batch_size, seq_length, hidden_dim, device=device)
+    for i in range(seq_length):
+        test_sequence[:, i, :] = i  # Position 0 has value 0, position 1 has value 1, etc.
+    
+    print("Original sequence (each position has its index as value):")
+    print("Shape:", test_sequence.shape)
+    print("Batch 0:")
+    for i in range(seq_length):
+        print(f"  Position {i}: {test_sequence[0, i, 0].item()}")
+    
+    # Step 1: Create random shuffle (like in random_masking)
+    noise = torch.rand(batch_size, seq_length, device=device)
+    ids_shuffle = torch.argsort(noise, dim=1)
+    ids_restore = torch.argsort(ids_shuffle, dim=1)
+    
+    print(f"\nRandom shuffle order: {ids_shuffle[0].tolist()}")
+    print(f"Restore order: {ids_restore[0].tolist()}")
+    
+    # Step 2: Keep only unmasked tokens (like encoder does)
+    len_keep = int(seq_length * (1 - mask_ratio))
+    ids_keep = ids_shuffle[:, :len_keep]
+    
+    print(f"\nKeeping first {len_keep} positions after shuffle: {ids_keep[0].tolist()}")
+    
+    # Extract only the kept tokens
+    sequence_unmasked = torch.gather(
+        test_sequence, 
+        dim=1, 
+        index=ids_keep.unsqueeze(-1).repeat(1, 1, hidden_dim)
+    )
+    
+    print(f"\nUnmasked sequence (what encoder sees):")
+    print("Shape:", sequence_unmasked.shape)
+    for i in range(len_keep):
+        original_pos = ids_keep[0, i].item()
+        print(f"  Kept token {i}: value={sequence_unmasked[0, i, 0].item()} (from original position {original_pos})")
+    
+    # Step 3: Simulate decoder - add mask tokens and restore order
+    num_mask_tokens = seq_length - len_keep
+    mask_tokens = torch.full((batch_size, num_mask_tokens, hidden_dim), -999.0, device=device)  # Use -999 to clearly see mask tokens
+    
+    print(f"\nAdding {num_mask_tokens} mask tokens with value -999")
+    
+    # Concatenate unmasked + mask tokens
+    full_sequence = torch.cat([sequence_unmasked, mask_tokens], dim=1)
+    
+    print(f"Full sequence before restore (unmasked + mask tokens):")
+    for i in range(seq_length):
+        print(f"  Position {i}: {full_sequence[0, i, 0].item()}")
+    
+    # Step 4: Restore original order using ids_restore
+    restored_sequence = torch.gather(
+        full_sequence,
+        dim=1,
+        index=ids_restore.unsqueeze(-1).repeat(1, 1, hidden_dim)
+    )
+    
+    print(f"\nRestored sequence (after applying ids_restore):")
+    for i in range(seq_length):
+        print(f"  Position {i}: {restored_sequence[0, i, 0].item()}")
+    
+    # Step 5: Create the mask to see which positions were masked
+    mask = torch.ones(batch_size, seq_length, device=device)
+    mask[:, :len_keep] = 0  # 0 = unmasked, 1 = masked
+    mask = torch.gather(mask, dim=1, index=ids_restore)
+    
+    print(f"\nFinal mask (0=unmasked, 1=masked): {mask[0].tolist()}")
+    
+    # Step 6: Verify correctness
+    print("\n" + "=" * 30)
+    print("VERIFICATION:")
+    print("=" * 30)
+    
+    # Check if unmasked positions have correct values
+    unmasked_positions = (mask[0] == 0).nonzero().flatten()
+    all_correct = True
+    
+    for pos in unmasked_positions:
+        pos = pos.item()
+        expected_value = pos  # Should equal position index
+        actual_value = restored_sequence[0, pos, 0].item()
+        is_correct = (actual_value == expected_value)
+        print(f"Position {pos}: expected {expected_value}, got {actual_value} - {'✓' if is_correct else '✗'}")
+        if not is_correct:
+            all_correct = False
+    
+    # Check if masked positions have mask token value
+    masked_positions = (mask[0] == 1).nonzero().flatten()
+    for pos in masked_positions:
+        pos = pos.item()
+        actual_value = restored_sequence[0, pos, 0].item()
+        is_mask_token = (actual_value == -999.0)
+        print(f"Position {pos}: masked, got {actual_value} - {'✓' if is_mask_token else '✗'}")
+        if not is_mask_token:
+            all_correct = False
+    
+    print(f"\nOVERALL RESULT: {'✅ PASS' if all_correct else '❌ FAIL'}")
+    
+    if all_correct:
+        print("ids_restore logic is working correctly!")
+    else:
+        print("❌ BUG DETECTED in ids_restore logic!")
+        print("This explains why your model can't reconstruct properly.")
+    
+    return all_correct
+
+# Run the test
+test_result = test_ids_restore_logic()
+
+# Test with your actual model's masking function
+def test_with_actual_model():
+    """
+    Test using your actual model's embedding layer
+    """
+    print("\n" + "=" * 50)
+    print("TESTING WITH ACTUAL MODEL EMBEDDING LAYER")
+    print("=" * 50)
+    
+    # Create synthetic brain data that matches your model's expected input
+    batch_size = 1
+    num_voxels = 424  # Your brain atlas size
+    num_timepoints = 200  # Your window size
+    
+    device = next(model.parameters()).device
+    
+    # Create synthetic signal where each voxel has a different constant value
+    synthetic_signals = torch.zeros(batch_size, num_voxels, num_timepoints, device=device)
+    for v in range(num_voxels):
+        synthetic_signals[0, v, :] = v  # Voxel 0 has value 0, voxel 1 has value 1, etc.
+    
+    # Create dummy xyz coordinates
+    synthetic_xyz = torch.randn(batch_size, num_voxels, 3, device=device)
+    
+    print(f"Created synthetic data:")
+    print(f"  Signals shape: {synthetic_signals.shape}")
+    print(f"  XYZ shape: {synthetic_xyz.shape}")
+    print(f"  Each voxel has constant value equal to its index")
+    
+    # Run through your model's embedding layer
+    model.eval()
+    with torch.no_grad():
+        embeddings, mask, ids_restore = model.vit.embeddings(
+            synthetic_signals, 
+            synthetic_xyz, 
+            noise=None
+        )
+    
+    print(f"\nModel embedding results:")
+    print(f"  Embeddings shape: {embeddings.shape}")
+    print(f"  Mask shape: {mask.shape}")
+    print(f"  ids_restore shape: {ids_restore.shape}")
+    print(f"  Mask ratio: {mask.mean().item():.3f}")
+    
+    # Now test reconstruction through decoder
+    decoder_output = model.decoder(embeddings, synthetic_xyz, ids_restore)
+    reconstructed = decoder_output.logits
+    
+    print(f"\nDecoder output:")
+    print(f"  Reconstructed shape: {reconstructed.shape}")
+    
+    # Reshape original signals to match reconstructed format
+    original_reshaped = torch.reshape(synthetic_signals, reconstructed.shape)
+    
+    # Check if unmasked regions are reconstructed correctly
+    mask_reshaped = mask.reshape(reconstructed.shape[:-1])
+    unmasked_mask = (mask_reshaped == 0)
+    
+    if unmasked_mask.any():
+        # Compare unmasked regions
+        original_unmasked = original_reshaped[unmasked_mask.unsqueeze(-1).repeat(1, 1, 1, reconstructed.shape[-1])]
+        reconstructed_unmasked = reconstructed[unmasked_mask.unsqueeze(-1).repeat(1, 1, 1, reconstructed.shape[-1])]
+        
+        mse = ((original_unmasked - reconstructed_unmasked) ** 2).mean()
+        print(f"\nUnmasked region MSE: {mse.item():.6f}")
+        
+        if mse.item() < 0.01:
+            print("✅ Unmasked regions reconstructed well!")
+        else:
+            print("❌ Unmasked regions NOT reconstructed well - ids_restore or decoder issue!")
+    
+    return mse.item() if unmasked_mask.any() else float('inf')
+
+# Run both tests
+if test_result:
+    actual_model_mse = test_with_actual_model()
+else:
+    print("Skipping actual model test due to basic logic failure")
+
 # ---- Load dataset ----
 test_ds = load_from_disk(test_ds_path)
 print("Loaded test dataset")
