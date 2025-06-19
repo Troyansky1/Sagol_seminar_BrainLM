@@ -420,7 +420,7 @@ def main():
     # Shira
     # coords_ds = load_from_disk(data_args.coords_dataset_path)
     if '.dat' in str(data_args.coords_dataset_path):
-        coords_ds = pd.read_csv('/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/BrainLM/toolkit/atlases/A424_Coordinates.dat',delimiter='\t', names=['idx', 'X', 'Y', 'Z'])
+        coords_ds = pd.read_csv(data_args.coords_dataset_path,delimiter='\t', names=['idx', 'X', 'Y', 'Z'])
         coords_ds = Dataset.from_pandas(coords_ds)
     else:
         coords_ds = load_from_disk(data_args.coords_dataset_path)
@@ -602,18 +602,27 @@ def main():
         #   IndexError: index 1 is out of bounds for dimension 0 with size 1
 
         signals = [example["signal_vectors"].permute(1,0) for example in examples]
+        lengths = [sig.shape[1] for sig in signals]
         # print("signals:", (signals[0].shape), (signals[1].shape))
 
         padded_signals = torch.nn.utils.rnn.pad_sequence(signals, batch_first=True, padding_value=0)
+        max_len = padded_signals.shape[2]
+        mask = torch.zeros((len(signals),  padded_signals.shape[1], padded_signals.shape[2]), dtype=torch.bool)
+        for i, l in enumerate(lengths):
+            mask[i, :l, :] = True
+            
         padded_signals = padded_signals.permute(0,2,1)
+        mask = mask.permute(0,2,1)
         # padding all the signals in all the batches to their maximum length (200)
         current_length = padded_signals.size(2)
         if current_length < 200:
             pad_width = 200 - current_length
             padded_signals = torch.nn.functional.pad(padded_signals, (0, pad_width), mode='constant', value=0)
+            mask = torch.nn.functional.pad(mask, (0, pad_width), mode='constant', value=False)
         # print("padded_signals:", (padded_signals[0].shape), (padded_signals[1].shape))
         final_length = (padded_signals.shape[2] // data_args.timepoint_patching_size) * data_args.timepoint_patching_size
         signal_vectors = padded_signals[:, :, :final_length]
+        # print("padded_signals",padded_signals.shape,"signal_vectors",signal_vectors.shape,"mask",mask.shape)
 
         metadata = {}
         for col in metadata_column_name_list:
@@ -630,6 +639,7 @@ def main():
             "xyz_vectors": xyz_vectors,
             "input_ids": signal_vectors,
             "labels": labels,
+            "padding_mask": mask
         }
         batch_dict.update(metadata)
         return batch_dict
@@ -708,7 +718,7 @@ def main():
             print("last_checkpoint is not None-------------")
             checkpoint = last_checkpoint
         print("else---------------------------")
-        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+        train_result = trainer.train(resume_from_checkpoint=checkpoint)#HERE
         trainer.save_model()
         trainer.log_metrics("train", train_result.metrics)
         trainer.save_metrics("train", train_result.metrics)

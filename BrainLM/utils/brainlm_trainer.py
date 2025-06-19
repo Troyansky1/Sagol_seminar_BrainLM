@@ -59,7 +59,7 @@ class BrainLMTrainer(Trainer):
         inputs = self._prepare_inputs(inputs)
 
         with self.compute_loss_context_manager():
-            loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+            loss, outputs = self.compute_loss(model, inputs, return_outputs=True)#HERE
 
         # print("self.state.global_step:", self.state.global_step)
         # print("self.args.eval_steps:", self.args.eval_steps)

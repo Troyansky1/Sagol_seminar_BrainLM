@@ -85,7 +85,7 @@ class BrainLMEmbeddings(ViTMAEEmbeddings):
     def initialize_weights(self):
         torch.nn.init.normal_(self.cls_token, std=self.config.initializer_range)
 
-    def forward(self, signal_vectors, xyz_vectors, noise):
+    def forward(self, signal_vectors, xyz_vectors, noise, padding_mask):
         """
         :param signal_vectors: torch tensor of shape [batch, num_voxels, num_timepoints_per_voxel]
         :param xyz_vectors: torch tensor of shape [batch, num_voxels, 3]
@@ -98,21 +98,27 @@ class BrainLMEmbeddings(ViTMAEEmbeddings):
         batch, num_voxels, num_timepoints_per_node = signal_vectors.shape
         num_patch_tokens = num_timepoints_per_node // self.timepoint_patching_size
 
+
         # --- Embedding Projections ---#
         reshaped_signal_vectors = torch.reshape(
             signal_vectors, (batch, num_voxels, -1, self.timepoint_patching_size)
         )  # --> [batch, num_voxels, num_patch_tokens, timepoint_patching_size]
+        reshaped_padding_mask = torch.reshape(
+            padding_mask, (batch, num_voxels, -1, self.timepoint_patching_size)
+        )  # --> [batch, num_voxels, num_patch_tokens, timepoint_patching_size]
+        
         signal_projection = self.signal_embedding_projection(reshaped_signal_vectors)
-        # signal_projection.shape = torch.Size([1, 424, 3, 512])
+        # --> [batch, num_voxels, num_patch_tokens, hidden_size]
+      
 
-        # xyz_vectors.shape = torch.Size([1, 50880, 3])
+        
         # Project xyz coordinates into spatial embedding
         xyz_projection = self.xyz_embedding_projection(
             xyz_vectors
         )  # --> [batch, num_voxels, hidden_size]
-        # xyz_projection.shape  = torch.Size([1, 50880, 512])
+        
         xyz_projection = xyz_projection.unsqueeze(2).repeat(1, 1, num_patch_tokens, 1)
-        # xyz_projection.shape = torch.Size([1, 50880, 3, 512])
+        
         x = (
             signal_projection + xyz_projection
         )  # --> [batch, num_voxels, num_patch_tokens, hidden_size]
@@ -121,17 +127,18 @@ class BrainLMEmbeddings(ViTMAEEmbeddings):
         x = self.pos_embedding(x)
 
         # Flatten num_brain_voxels and window_len dimensions
-        x = torch.flatten(x, start_dim=1, end_dim=2)  # --> [batch, seq, hidden_size]
-
+        x = torch.flatten(x, start_dim=1, end_dim=2)  # --> [batch, seq, hidden_size]  seq=num_voxels*num_patch_tokens,
+        reshaped_padding_mask = torch.flatten(reshaped_padding_mask, start_dim=1, end_dim=2)
         # Random masking
         embeddings, mask, ids_restore = self.random_masking(x, noise=noise)
+        # print("mask",mask.shape,"padding_mask",padding_mask.shape,"reshaped_padding_mask",reshaped_padding_mask.shape)
 
         # Append cls token
         cls_tokens = self.cls_token.expand(embeddings.shape[0], -1, -1)
         embeddings = torch.cat((cls_tokens, embeddings), dim=1)  # CLS token idx 0
-        return embeddings, mask, ids_restore
+        return embeddings, (mask.unsqueeze(-1).bool() & reshaped_padding_mask.bool()).all(dim=-1), ids_restore
     
-    def random_masking(self, sequence, noise=None):
+    def random_masking(self, sequence, noise=None): # 2nd solution: give the tokens that are padding a score according to their padding and choose randomly accordingly
         """
         Perform per-sample random masking by per-sample shuffling. Per-sample shuffling is done by argsort random
         noise.
@@ -312,6 +319,7 @@ class BrainLMModel(ViTMAEModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         noise: Optional[bool] = None,
+        padding_mask: torch.Tensor = None,
     ) -> Union[Tuple, ViTMAEModelOutput]:
 
         output_attentions = (
@@ -331,8 +339,8 @@ class BrainLMModel(ViTMAEModel):
 
         # BrainLM embedding, rather than VitMAE Image Embedding
         embedding_output, mask, ids_restore = self.embeddings(
-            signal_vectors, xyz_vectors, noise
-        )
+            signal_vectors, xyz_vectors, noise, padding_mask
+        )#HERE
 
         encoder_outputs = self.encoder(
             embedding_output,
@@ -563,7 +571,7 @@ class BrainLMForPretraining(ViTMAEForPreTraining):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.kaiming_uniform_(module.weight)
 
-    def forward_loss(self, signal_values, pred_values, mask):
+    def forward_loss(self, signal_values, pred_values, mask):# 1st solution: maybe change here (no loss on 0 values in signal_values)
         """
         Args:
             signal_values: tensor of shape [batch_size, num_brain_voxels, num_tokens, timepoint_patch_preds]
@@ -597,6 +605,7 @@ class BrainLMForPretraining(ViTMAEForPreTraining):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         noise: Optional[bool] = None,
+        padding_mask: torch.Tensor = None
     ) -> Union[Tuple, ViTMAEForPreTrainingOutput]:
 
         return_dict = (
@@ -612,7 +621,8 @@ class BrainLMForPretraining(ViTMAEForPreTraining):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             noise=noise,
-        )
+            padding_mask=padding_mask
+        )#HERE
 
         latent = outputs.last_hidden_state
         ids_restore = outputs.ids_restore
