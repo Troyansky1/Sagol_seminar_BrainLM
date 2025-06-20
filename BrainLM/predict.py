@@ -8,6 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from datasets import load_from_disk, Dataset
 
+
 from brainlm_mae.modeling_brainlm import BrainLMForPretraining
 
 # ---- Parameters ----
@@ -18,7 +19,15 @@ moving_window_len = 120
 checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-05-12-12_49_38_/checkpoint-2900"
 test_ds_path = "/home/ai_center/ai_data/gonyrosenman/postprocess_results/brain_LM_regular/test" #arrow files?
 coords_ds_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/toolkit/atlases/A424_Coordinates.dat"
-    
+
+# Create nested output directory
+checkpoint = os.path.basename(os.path.dirname(checkpoint_path))
+plots_dir = os.path.join("plots", checkpoint)
+os.makedirs(plots_dir, exist_ok=True)
+# Save file with counter
+existing_files = [f for f in os.listdir(plots_dir) if f.endswith('.png')]
+sequence_num = len(existing_files) + 1
+
 # ---- Load model ----
 model = BrainLMForPretraining.from_pretrained(checkpoint_path)
 model.eval()
@@ -106,6 +115,7 @@ with torch.no_grad():
         xyz_vectors=model_inputs["xyz_vectors"],
         labels=model_inputs["labels"],
         input_ids=model_inputs["input_ids"],
+        padding_mask=torch.ones_like(model_inputs["signal_vectors"], dtype=torch.bool)
     )
 
 # ---- Results ----
@@ -160,8 +170,12 @@ def plot_single_masked_voxel(voxel_idx, gt, predicted_logits, mask_pattern):
              bbox=dict(boxstyle="round,pad=0.3", facecolor='lightgreen' if masked_token_idx != 1 else 'lightcoral'))
     plt.text(100, plt.ylim()[1]*0.9, 'Token 2\n(80-119)', ha='center', va='top',
              bbox=dict(boxstyle="round,pad=0.3", facecolor='lightgreen' if masked_token_idx != 2 else 'lightcoral'))
-    
-    plt.savefig(f"plots/parcel_{voxel_idx}_token_{masked_token_idx}.png", dpi=150, bbox_inches='tight')
+
+    plt.savefig(
+        os.path.join(plots_dir, f"parcel_{voxel_idx}_token_{masked_token_idx}_{sequence_num:03d}.png"),
+        dpi=150,
+        bbox_inches='tight'
+    )
     plt.close()
 
 # Plot first 3 voxels with exactly 1 masked token using  predictions
@@ -171,6 +185,7 @@ if len(single_masked_voxels) > 0:
         voxel_idx = single_masked_voxels[i].item()
         mask_pattern = mask_full[voxel_idx]
         plot_single_masked_voxel(voxel_idx, gt, logits_reshaped, mask_pattern)
+        sequence_num += 1
 else:
     print("No voxels found with exactly 1 masked token!")
 
