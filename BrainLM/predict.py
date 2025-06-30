@@ -14,10 +14,13 @@ from brainlm_mae.modeling_brainlm import BrainLMForPretraining
 # ---- Parameters ----
 recording_col_name = "Voxelwise_RobustScaler_Normalized_Recording"
 moving_window_len = 120
+overfit=True
 
 # ---- Paths ----
-checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-05-12-12_49_38_/checkpoint-2900"
+#checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-05-12-12_49_38_/checkpoint-2900"
+checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-06-25-18_55_04_/checkpoint-4900"
 test_ds_path = "/home/ai_center/ai_data/gonyrosenman/postprocess_results/brain_LM_regular/test" #arrow files?
+train_ds_path = "/home/ai_center/ai_data/gonyrosenman/postprocess_results/brain_LM_regular/train" #arrow files?
 coords_ds_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/toolkit/atlases/A424_Coordinates.dat"
 
 # Create nested output directory
@@ -34,7 +37,14 @@ model.eval()
 print("Loaded model")
 
 # ---- Load dataset ----
-test_ds = load_from_disk(test_ds_path)
+if overfit:
+        train_ds = load_from_disk(train_ds_path)
+        first_three = train_ds.select(range(3))
+        first_three_dicts = first_three.to_list()
+        duplicated_train_dicts = first_three_dicts 
+        test_ds = Dataset.from_list(duplicated_train_dicts)
+else:
+    test_ds = load_from_disk(test_ds_path)
 print("Loaded test dataset")
 
 # ---- Load coordinates ----
@@ -120,6 +130,9 @@ with torch.no_grad():
 
 # ---- Results ----
 logits_tensor = output["logits"][0]  # [1, 424, 3, 40]
+
+print("Loss is:", output["loss"])
+
 # Concatenate the 3 tokens per voxel
 logits_reshaped = logits_tensor[0].reshape(424, -1)  # [424, 120]
 
@@ -170,12 +183,18 @@ def plot_single_masked_voxel(voxel_idx, gt, predicted_logits, mask_pattern):
              bbox=dict(boxstyle="round,pad=0.3", facecolor='lightgreen' if masked_token_idx != 1 else 'lightcoral'))
     plt.text(100, plt.ylim()[1]*0.9, 'Token 2\n(80-119)', ha='center', va='top',
              bbox=dict(boxstyle="round,pad=0.3", facecolor='lightgreen' if masked_token_idx != 2 else 'lightcoral'))
-
-    plt.savefig(
-        os.path.join(plots_dir, f"parcel_{voxel_idx}_token_{masked_token_idx}_{sequence_num:03d}.png"),
-        dpi=150,
-        bbox_inches='tight'
-    )
+    if overfit:
+        plt.savefig(
+            os.path.join(plots_dir, f"OVERFIT_parcel_{voxel_idx}_token_{masked_token_idx}_{sequence_num:03d}.png"),
+            dpi=150,
+            bbox_inches='tight'
+        )
+    else:
+        plt.savefig(
+            os.path.join(plots_dir, f"parcel_{voxel_idx}_token_{masked_token_idx}_{sequence_num:03d}.png"),
+            dpi=150,
+            bbox_inches='tight'
+        )
     plt.close()
 
 # Plot first 3 voxels with exactly 1 masked token using  predictions

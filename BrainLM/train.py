@@ -19,6 +19,7 @@ from datasets import load_from_disk, DatasetDict
 
 # Shira
 from datasets import Dataset
+from datasets import concatenate_datasets
 import pandas as pd
 import json
 
@@ -39,6 +40,7 @@ from utils.brainlm_trainer import BrainLMTrainer
 #Shira from gony
 from utils.metrics import MetricsCalculator
 
+overfit=True
 
 """ Pre-training a 🤗 ViT model as an MAE (masked autoencoder), as proposed in https://arxiv.org/abs/2111.06377."""
 logger = logging.getLogger(__name__)
@@ -410,6 +412,13 @@ def main():
     train_ds = load_from_disk(data_args.train_dataset_path)
     print("train_ds.type:", type(train_ds))
     val_ds = load_from_disk(data_args.val_dataset_path)
+    if overfit:
+        first_three = train_ds.select(range(3))
+        first_three_dicts = first_three.to_list()
+        duplicated_train_dicts = first_three_dicts * 1000
+        train_ds = Dataset.from_list(duplicated_train_dicts)
+        duplicated_test_dicts = first_three_dicts * 350
+        val_ds = Dataset.from_list(duplicated_test_dicts)
 
     # Turn into a dictionary of Datasets
     ds = DatasetDict({"train": train_ds, "validation": val_ds})
