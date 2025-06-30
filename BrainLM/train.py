@@ -129,6 +129,12 @@ class DataTrainingArguments:
             )
         },
     )
+    overfit: bool = field(
+        default=False, 
+        metadata={
+            "help": "Enable overfit mode. Use a few scans repeatedly"
+        },
+    )
 
     def __post_init__(self):
         self.data_files = None
@@ -318,9 +324,7 @@ class CustomTrainingArguments(TrainingArguments):
             "help": "If we want to use TanH as the nonlinearity for the output layer."
         },
     )
-    overfit: bool = field(
-        default=False, metadata={"help": "Enable overfit mode. Use a few scans repeatedly"}
-    )
+
 
 
 
@@ -735,7 +739,6 @@ def main():
         elif last_checkpoint is not None:
             print("last_checkpoint is not None-------------")
             checkpoint = last_checkpoint
-        print("else---------------------------")
         train_result = trainer.train(resume_from_checkpoint=checkpoint)#HERE
         trainer.save_model()
         trainer.log_metrics("train", train_result.metrics)
