@@ -40,7 +40,6 @@ from utils.brainlm_trainer import BrainLMTrainer
 #Shira from gony
 from utils.metrics import MetricsCalculator
 
-overfit=True
 
 """ Pre-training a 🤗 ViT model as an MAE (masked autoencoder), as proposed in https://arxiv.org/abs/2111.06377."""
 logger = logging.getLogger(__name__)
@@ -319,7 +318,9 @@ class CustomTrainingArguments(TrainingArguments):
             "help": "If we want to use TanH as the nonlinearity for the output layer."
         },
     )
-
+    overfit: bool = field(
+        default=False, metadata={"help": "Enable overfit mode. Use a few scans repeatedly"}
+    )
 
 
 
@@ -406,6 +407,9 @@ def main():
         wandb.init(
             project="BrainLM", name="{}-{}".format(dataset_name, date_time_stamp)
         )
+    
+    # Using all the data or not
+    overfit = data_args.overfit
 
     # --- Initialize Dataset ---#
     # Load arrow datasets
@@ -413,11 +417,15 @@ def main():
     print("train_ds.type:", type(train_ds))
     val_ds = load_from_disk(data_args.val_dataset_path)
     if overfit:
-        first_three = train_ds.select(range(3))
-        first_three_dicts = first_three.to_list()
-        duplicated_train_dicts = first_three_dicts * 1000
+        num_scans_to_overfit = 3
+        train_duplication_factor = 1000
+        val_duplication_factor = 350
+        
+        first_few = train_ds.select(range(num_scans_to_overfit))
+        first_few_dicts = first_few.to_list()
+        duplicated_train_dicts = first_few_dicts * train_duplication_factor
         train_ds = Dataset.from_list(duplicated_train_dicts)
-        duplicated_test_dicts = first_three_dicts * 350
+        duplicated_test_dicts = first_few_dicts * val_duplication_factor
         val_ds = Dataset.from_list(duplicated_test_dicts)
 
     # Turn into a dictionary of Datasets
@@ -536,6 +544,7 @@ def main():
         encoders, decoders = None, None
     training_args.skip_plots = training_args.skip_plots if is_main_process(training_args.local_rank) else True
     metrics_calculator = MetricsCalculator(training_args.skip_plots, encoders, decoders)
+
 
 
 
