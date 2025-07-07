@@ -14,11 +14,11 @@ from brainlm_mae.modeling_brainlm import BrainLMForPretraining
 # ---- Parameters ----
 recording_col_name = "Voxelwise_RobustScaler_Normalized_Recording"
 moving_window_len = 120
-overfit=True
+overfit=False
 
 # ---- Paths ----
-#checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-05-12-12_49_38_/checkpoint-2900"
-checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-06-25-18_55_04_/checkpoint-4900"
+checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-06-30-19_59_03_/checkpoint-2900"
+#checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-07-03-07_20_46_/checkpoint-4900"
 test_ds_path = "/home/ai_center/ai_data/gonyrosenman/postprocess_results/brain_LM_regular/test" #arrow files?
 train_ds_path = "/home/ai_center/ai_data/gonyrosenman/postprocess_results/brain_LM_regular/train" #arrow files?
 coords_ds_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/toolkit/atlases/A424_Coordinates.dat"

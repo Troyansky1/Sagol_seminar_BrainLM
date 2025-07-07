@@ -421,8 +421,8 @@ def main():
     print("train_ds.type:", type(train_ds))
     val_ds = load_from_disk(data_args.val_dataset_path)
     if overfit:
-        num_scans_to_overfit = 3
-        train_duplication_factor = 1000
+        num_scans_to_overfit = 100
+        train_duplication_factor = 300
         val_duplication_factor = 350
         
         first_few = train_ds.select(range(num_scans_to_overfit))
