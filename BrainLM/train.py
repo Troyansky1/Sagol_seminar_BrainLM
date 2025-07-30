@@ -421,16 +421,17 @@ def main():
     print("train_ds.type:", type(train_ds))
     val_ds = load_from_disk(data_args.val_dataset_path)
     if overfit:
-        num_scans_to_overfit = 100
-        train_duplication_factor = 300
+        print("Overfit condition")
+        num_scans_to_overfit = 1
+        train_duplication_factor = 3000
         val_duplication_factor = 350
-        
         first_few = train_ds.select(range(num_scans_to_overfit))
         first_few_dicts = first_few.to_list()
         duplicated_train_dicts = first_few_dicts * train_duplication_factor
         train_ds = Dataset.from_list(duplicated_train_dicts)
         duplicated_test_dicts = first_few_dicts * val_duplication_factor
         val_ds = Dataset.from_list(duplicated_test_dicts)
+        print("Loaded overfit datasets.")
 
     # Turn into a dictionary of Datasets
     ds = DatasetDict({"train": train_ds, "validation": val_ds})
