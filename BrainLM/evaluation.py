@@ -16,15 +16,29 @@ from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
+from datasets import load_from_disk, Dataset
 
-from llava.psy_llava_utils.general_utils import sanitize_string
-from llava.psy_llava_utils.constants import NEUROQUERY_LITERATURE_DIR
-from llava.explain.visualize import save_colorbar
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
 
-coords_ds_path = '/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/BrainLM/toolkit/atlases/A424_Coordinates.dat'
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import IncrementalPCA
+from sklearn.cluster import MiniBatchKMeans, KMeans
+from sklearn.metrics import silhouette_score
+
+from Sagol_seminar_BrainLM.BrainLM.brainlm_mae.modeling_brainlm import BrainLMForPretraining
+
+
+#from llava.psy_llava_utils.general_utils import sanitize_string
+#from llava.psy_llava_utils.constants import NEUROQUERY_LITERATURE_DIR
+#from llava.explain.visualize import save_colorbar
+
+coords_ds_path = 'Sagol_seminar_BrainLM/BrainLM/toolkit/atlases/A424_Coordinates.dat'
 coords_ds = pd.read_csv(coords_ds_path, delimiter='\t', names=['idx', 'X', 'Y', 'Z'])
 coords_labels_path = os.path.join(os.path.dirname(coords_ds_path), 'A424.dlabel.nii')
-networks_coords_path ='/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/BrainLM/toolkit/atlases/Schaefer2018_1000Parcels_7Networks_order_FSLMNI152_2mm.Centroid_RAS.csv'
+networks_coords_path ='/home/ai_center/ai_users/gonyrosenman/students/users/omernaziri1/Schaefer2018_1000Parcels_7Networks_order_FSLMNI152_2mm.Centroid_RAS.csv'
 networks_coords = pd.read_csv(networks_coords_path)
 coords_labels = nib.load(coords_labels_path)
 main_atlas_path = os.path.join(os.path.dirname(coords_ds_path), 'A424.nii.gz')
@@ -456,16 +470,155 @@ class MetaAnalyze():
                 raise ValueError(f"Unhandled metric: {metric}")
         return final_analysis
 
+import numpy as np
+from collections import defaultdict
 
-    #def project_parcellation_to_meta(self, parcellated_array):
-    #    statistical_nimg = self.project_to_statistical_map(parcellated_array)
-#
-    #    dset = Dataset.load('path_to_your_dataset.pkl.gz')
-#
-    #    # Initialize the CorrelationDecoder
-    #    decoder = CorrelationDecoder()
-    #    decoder.fit(dset)
-    #    decoded_terms = decoder.transform(statistical_nimg)
-if __name__=="__main__":
-   meta_analyzer = MetaAnalyze(main_atlas, coords_labels, coords_ds, networks_coords)
-   meta_analyzer.neuroquery_question_analysis(results_dir, question, statistical_map, num_permutations=10, interactive=False)
+def build_network_index(meta_analyzer):
+    """
+    Creates an index vector of length N: for each parcel, network number 0..M-1,
+    and also a list of network names by order.
+    """
+    parcel_dict = meta_analyzer.parcel_dict
+    N = len(parcel_dict)
+    nets = [parcel_dict[i+1]['full_network_name'] for i in range(N)]
+    unique_nets = sorted(set(nets))
+    net_to_idx = {n:i for i,n in enumerate(unique_nets)}
+    net_idx = np.array([net_to_idx[n] for n in nets], dtype=int)  # shape (N,)
+    return net_idx, unique_nets
+
+def network_feature_deviation_batch(X, meta_analyzer, mode="network"):
+    """
+    X: np.ndarray shape (K, N) - K sequences, N parcels
+    meta_analyzer: contains parcel_dict with parcel->network mapping
+    mode: "network" -> features at network level (K,M)
+          "parcel"  -> features at parcel level (K,N)
+
+    Returns:
+    - if mode="network": (features, networks_order)  where features.shape==(K,M)
+    - if mode="parcel": (features, None)            where features.shape==(K,N)
+    """
+    assert X.ndim == 2, "X must be (K, N)"
+    K, N = X.shape
+    net_idx, networks_order = build_network_index(meta_analyzer)
+    M = len(networks_order)
+
+    # Masks by network (M masks of length N). M is small (7~), so looping over networks is efficient.
+    masks = [net_idx == m for m in range(M)]
+
+    # Global mean for each sequence (ignoring NaN)
+    global_mean = np.nanmean(X, axis=1, keepdims=True)  # (K,1)
+
+    # Mean for each network for each sequence: (K,M)
+    net_means = np.empty((K, M), dtype=float)
+    for m, mask in enumerate(masks):
+        # Sum over parcels of network m for each sequence
+        sum_m = np.nansum(X[:, mask], axis=1)                    # (K,)
+        # Count non-NaN values in each sequence within the network
+        count_m = np.sum(~np.isnan(X[:, mask]), axis=1)          # (K,)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            net_means[:, m] = sum_m / count_m                    # (K,)
+    # Where there are no data points in a network for a given sequence → NaN
+    net_means[np.isinf(net_means)] = np.nan
+
+    if mode == "network":
+        # Deviation of network mean from global mean (per scan)
+        feats = net_means - global_mean  # (K,M) - (K,1) → broadcast
+        return feats, networks_order
+
+    elif mode == "parcel":
+        # We want to subtract from each parcel the mean(network(parcel)) of the same sequence
+        # Build matrix (K,N) of network mean for each parcel using advanced indexing
+        r_means_per_parcel = net_means[:, net_idx]  # (K,N)
+        feats = X - r_means_per_parcel              # (K,N)
+        return feats, None
+
+    else:
+        raise ValueError("mode must be 'network' or 'parcel'")
+
+from collections import defaultdict
+import numpy as np
+
+def network_feature_deviation_dataset(ds, meta_analyzer, cap=1000, mode="network"):
+    """
+    ds: HuggingFace Dataset where each row is a sequence, and each column is a parcel (N parcels).
+    meta_analyzer: MetaAnalyze object with parcel_dict (containing parcel->network mapping).
+    mode: "network" -> returns features at network level (K,M)
+          "parcel"  -> returns features at parcel level (K,N)
+
+    Returns:
+    - if mode="network": (features, networks_order)
+      features: list of lists [[..M..], ..K..]
+    - if mode="parcel": (features, None)
+      features: list of lists [[..N..], ..K..]
+    """
+    # Parcel -> network mapping
+    parcel_dict = meta_analyzer.parcel_dict
+    N = len(parcel_dict)
+    parcel_networks = [parcel_dict[i+1]['full_network_name'] for i in range(N)]
+    unique_networks = sorted(set(parcel_networks))
+    print(unique_networks)
+    net_to_idx = {n:i for i,n in enumerate(unique_networks)}
+
+    results = []
+    c = 0
+    for example in ds:   # Iterate sequence by sequence
+        recording_col_name = "Voxelwise_RobustScaler_Normalized_Recording"
+        vox = example[recording_col_name]
+        row_values = np.array(vox, dtype=float).sum(axis=0)
+        print("example ", str(c))
+        c += 1
+        if c > cap:
+            break
+
+        if mode == "network":
+            global_mean = np.nanmean(row_values)
+            net_means = defaultdict(list)
+            for i, val in enumerate(row_values):
+                if np.isfinite(val):
+                    net_means[parcel_networks[i]].append(val)
+            feat = []
+            for net in unique_networks:
+                vals = net_means.get(net, [])
+                net_mean = np.mean(vals) if vals else np.nan
+                feat.append(net_mean - global_mean)
+            results.append(feat)
+
+        elif mode == "parcel":
+            net_means = defaultdict(list)
+            for i, val in enumerate(row_values):
+                if np.isfinite(val):
+                    net_means[parcel_networks[i]].append(val)
+            net_means = {net: np.mean(vals) for net, vals in net_means.items()}
+            feat = []
+            for i, val in enumerate(row_values):
+                net = parcel_networks[i]
+                feat.append(val - net_means.get(net, np.nan))
+            results.append(feat)
+
+        else:
+            raise ValueError("mode must be 'network' or 'parcel'")
+
+    print("loop done")
+    if mode == "network":
+        return results, unique_networks
+    else:
+        return results, None
+
+def cluster_network_features(
+    X,
+    k: int = 2,
+    try_k=None,                      # e.g. range(2,9) to choose K automatically
+    standardize: bool = True,        # StandardScaler before clustering
+    spherical: bool = False,         # L2 normalization (spherical k-means)
+    random_state: int = 0,
+    sample_for_silhouette: int = 500 # Sampling for silhouette when data is large
+):
+    """
+    X: (K, M) numpy / torch — network-level features for each sequence.
+    Returns dict with labels, centers, scaler, kmeans, X_transformed.
+    """
+    # Handle NaN/Inf to not break scaler or KMeans
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+    scaler = None
+    if standardize:
