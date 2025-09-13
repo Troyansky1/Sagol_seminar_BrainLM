@@ -14,10 +14,10 @@ from brainlm_mae.modeling_brainlm import BrainLMForPretraining
 # ---- Parameters ----
 recording_col_name = "Voxelwise_RobustScaler_Normalized_Recording"
 moving_window_len = 120
-overfit=False
+overfit=True
 
 # ---- Paths ----
-checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-06-30-19_59_03_/checkpoint-2900"
+checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-08-05-09_32_26_/checkpoint-1000"
 #checkpoint_path = "/home/ai_center/ai_users/gonyrosenman/students/users/troyansky1/Sagol_seminar_BrainLM/BrainLM/training-runs/pretrain_2025-07-03-07_20_46_/checkpoint-4900"
 test_ds_path = "/home/ai_center/ai_data/gonyrosenman/postprocess_results/brain_LM_regular/test" #arrow files?
 train_ds_path = "/home/ai_center/ai_data/gonyrosenman/postprocess_results/brain_LM_regular/train" #arrow files?
@@ -38,11 +38,10 @@ print("Loaded model")
 
 # ---- Load dataset ----
 if overfit:
-        train_ds = load_from_disk(train_ds_path)
-        first_three = train_ds.select(range(3))
-        first_three_dicts = first_three.to_list()
-        duplicated_train_dicts = first_three_dicts 
-        test_ds = Dataset.from_list(duplicated_train_dicts)
+    # Use only the very first scan for testing
+    train_ds = load_from_disk(train_ds_path)
+    first_scan_only = train_ds.select([0])  # Just index 0
+    test_ds = first_scan_only
 else:
     test_ds = load_from_disk(test_ds_path)
 print("Loaded test dataset")
@@ -130,18 +129,21 @@ with torch.no_grad():
 
 # ---- Results ----
 logits_tensor = output["logits"][0]  # [1, 424, 3, 40]
-
+print("logits_tensor",logits_tensor.shape)
 print("Loss is:", output["loss"])
 
 # Concatenate the 3 tokens per voxel
 logits_reshaped = logits_tensor[0].reshape(424, -1)  # [424, 120]
+# logits_reshaped = logits_tensor[0].permute(0, 2, 1).reshape(424, -1)  # [424, 120]
+print("logits_reshaped",logits_reshaped.shape)
 
 # Get full mask pattern for all tokens
 mask_full = output["mask"][0].reshape(424, 3)  # [424 voxels, 3 tokens each]
-
+print("mask_full", mask_full.shape, mask_full)
 # Find voxels with exactly 1 masked token
 num_masked_per_voxel = torch.sum(mask_full, dim=1)  # Count masked tokens per voxel
 single_masked_voxels = torch.where(num_masked_per_voxel == 1)[0]
+print("single_masked_voxels", single_masked_voxels)
 no_masked_voxels = torch.where(num_masked_per_voxel == 0)[0]
 
 gt = inputs["signal_vectors"][0, :, :].cpu().numpy()  # [424, 120]
@@ -150,6 +152,11 @@ gt = inputs["signal_vectors"][0, :, :].cpu().numpy()  # [424, 120]
 os.makedirs("plots", exist_ok=True)
 
 def plot_single_masked_voxel(voxel_idx, gt, predicted_logits, mask_pattern):
+    pred_values = predicted_logits[voxel_idx, :]
+    signal_values = gt[voxel_idx, :]
+    mask = mask_pattern.repeat_interleave(40)
+    loss = (((pred_values - signal_values) ** 2) * mask).sum() / mask.sum()
+    print(f"Loss of parsel {voxel_idx} is: {loss}")
     plt.figure(figsize=(15, 8))
     
     # Plot ground truth
