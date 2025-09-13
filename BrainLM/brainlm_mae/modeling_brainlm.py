@@ -18,6 +18,7 @@ from transformers.models.vit_mae.modeling_vit_mae import (
 from transformers.models.nystromformer.modeling_nystromformer import NystromformerLayer
 from transformers.modeling_outputs import BaseModelOutput
 
+overfit=True
 
 class PositionalEncoding(nn.Module):
     """
@@ -128,9 +129,14 @@ class BrainLMEmbeddings(ViTMAEEmbeddings):
 
         # Flatten num_brain_voxels and window_len dimensions
         x = torch.flatten(x, start_dim=1, end_dim=2)  # --> [batch, seq, hidden_size]  seq=num_voxels*num_patch_tokens,
+        # print("x.shape",x.shape)
         reshaped_padding_mask = torch.flatten(reshaped_padding_mask, start_dim=1, end_dim=2)
+    
         # Random masking
-        embeddings, mask, ids_restore = self.random_masking(x, noise=noise)
+        if overfit:
+            embeddings, mask, ids_restore = self.non_random_masking(x, noise=noise)
+        else:
+            embeddings, mask, ids_restore = self.random_masking(x, noise=noise)
         # print("mask",mask.shape,"padding_mask",padding_mask.shape,"reshaped_padding_mask",reshaped_padding_mask.shape)
 
         # Append cls token
@@ -153,6 +159,38 @@ class BrainLMEmbeddings(ViTMAEEmbeddings):
 
         if noise is None:
             noise = torch.rand(batch_size, seq_length, device=sequence.device)  # noise in [0, 1]
+
+        # sort noise for each sample
+        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+        # keep the first subset
+        ids_keep = ids_shuffle[:, :len_keep]
+        sequence_unmasked = torch.gather(sequence, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, dim))
+
+        # generate the binary mask: 0 is keep, 1 is remove
+        mask = torch.ones([batch_size, seq_length], device=sequence.device)
+        mask[:, :len_keep] = 0
+        # unshuffle to get the binary mask
+        mask = torch.gather(mask, dim=1, index=ids_restore)
+
+        return sequence_unmasked, mask, ids_restore
+
+    def non_random_masking(self, sequence, noise=None): 
+        """
+        Perform per-sample random masking by per-sample shuffling. Per-sample shuffling is done by argsort random
+        noise.
+
+        Args:
+            sequence (`torch.LongTensor` of shape `(batch_size, sequence_length, dim)`)
+            noise (`torch.FloatTensor` of shape `(batch_size, sequence_length)`, *optional*) which is
+                mainly used for testing purposes to control randomness and maintain the reproducibility
+        """
+        batch_size, seq_length, dim = sequence.shape
+        len_keep = int(seq_length * (1 - self.config.mask_ratio))
+
+        if noise is None:
+            noise = torch.tensor([1, 2, 3], device=sequence.device).repeat((seq_length // 3) + 1)[:seq_length].unsqueeze(0).repeat(batch_size, 1)
 
         # sort noise for each sample
         ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
@@ -653,3 +691,35 @@ class BrainLMForPretraining(ViTMAEForPreTraining):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+    
+    def encode_embeddings(
+        self,
+        signal_vectors: torch.Tensor = None,
+        xyz_vectors: torch.Tensor = None,
+        labels: torch.Tensor = None,  # not used
+        input_ids: torch.Tensor = None,  # not used, identical to torch.cat([expression_vectors, sampled_gene_indices]). Argument is here because input_ids will go to compute_metrics(), and we need expression vectors and sampled gene indices there
+        head_mask: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        noise: Optional[bool] = None,
+        padding_mask: torch.Tensor = None
+    ) -> Union[Tuple, ViTMAEForPreTrainingOutput]:
+
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
+
+        # Encoder will perform BrainLM fmri embedding rather than VitMAE Image Embedding
+        outputs = self.vit(
+            signal_vectors=signal_vectors,
+            xyz_vectors=xyz_vectors,
+            head_mask=head_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            noise=noise,
+            padding_mask=padding_mask
+        )#HERE
+
+        return outputs
